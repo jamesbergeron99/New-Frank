@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Mic, MicOff, Play, Pause, FileUp, Trash2 } from 'lucide-react';
+import { 
+  Send, Mic, MicOff, Pause, Play, RotateCcw, Loader2, 
+  FileUp, Trash2, Stethoscope, Scissors 
+} from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
-// --- CONFIGURATION (SECURELY PULLING FROM YOUR .ENV) ---
+// --- CONFIGURATION ---
 const apiKey = process.env.REACT_APP_GEMINI_API_KEY; 
-const INWORLD_API_KEY = process.env.REACT_APP_INWORLD_KEY; 
-const VOICE_ID = process.env.REACT_APP_VOICE_ID; 
+
+// Jimmy Voice Clone - Locked Credentials
+const INWORLD_API_KEY = "SjdZdzZYYWUwY21LdlliOXdrTEhFNDlhUkYxM2FCWHA6bUt1aGszVVJnYU9NN0twNm5odnhyWlJLWURhT2lDUFJFNUFnQk81RXpKajJkcVVSUlhtV0hseGhmZEc3U2IzYg=="; 
+const VOICE_ID = "default-oglabcjnetcklcq7rghmbw__jimmy"; 
 
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -24,30 +29,31 @@ const db = getFirestore(app);
 
 const App = () => {
   const [user, setUser] = useState(null);
-  const [messages, setMessages] = useState([{ role: 'assistant', content: "I'm Frank. Darling, the velvet is on. Send me the pilot." }]);
+  const [messages, setMessages] = useState([{ role: 'assistant', content: "I'm Frank. Darling, the velvet is on. Let’s see if these pages have enough soul to survive the weekend." }]);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  
+  const [activeTab, setActiveTab] = useState('chat');
+  const [scriptData, setScriptData] = useState(null);
+  const [deepDiveData, setDeepDiveData] = useState(null);
+
   const audioContextRef = useRef(null);
   const sourceNodeRef = useRef(null);
   const recognitionRef = useRef(null);
+  const scriptMemoryRef = useRef("");
 
   useEffect(() => {
     signInAnonymously(auth);
     onAuthStateChanged(auth, setUser);
   }, []);
 
-  // --- ORIGINAL WORKING TTS LOGIC ---
+  // --- AUDIO ENGINE ---
   const speak = async (text) => {
     try {
       const response = await fetch('https://api.inworld.ai/tts/v1/voice', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json', 
-          'Authorization': `Basic ${INWORLD_API_KEY}` 
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${INWORLD_API_KEY}` },
         body: JSON.stringify({ text, voiceId: VOICE_ID, modelId: "inworld-tts-1.5-max" })
       });
       const json = await response.json();
@@ -64,80 +70,94 @@ const App = () => {
       setIsSpeaking(true);
       source.onended = () => setIsSpeaking(false);
       source.start(0);
-    } catch (e) { console.error("Voice failed", e); }
+    } catch (e) { console.error("Voice Error", e); }
   };
 
-  // --- ORIGINAL WORKING BRAIN LOGIC ---
-  const handleFrankResponse = async (text) => {
-    if (!text || isProcessing) return;
+  // --- BRAIN ENGINE ---
+  const handleFrankResponse = async (textToProcess, isDeepDive = false) => {
+    if (!textToProcess && !isDeepDive) return;
     setIsProcessing(true);
-    setInputText('');
-
+    if (isDeepDive) setActiveTab('deep-dive');
+    
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      const prompt = isDeepDive ? `PERFORM SURGERY ON THIS SCRIPT: ${scriptMemoryRef.current}` : textToProcess;
+      
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: `You are Frank, a flamboyant movie executive. Respond to: ${text}` }] }]
+          contents: [{ parts: [{ text: `You are Frank, a flamboyant Sunset Blvd executive. Respond to: ${prompt}` }] }]
         })
       });
+      
       const data = await response.json();
       const reply = data.candidates[0].content.parts[0].text;
-
-      setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'assistant', content: reply }]);
+      
+      const newMessages = [...messages, { role: 'user', content: isDeepDive ? "[Deep Dive]" : textToProcess }, { role: 'assistant', content: reply }];
+      setMessages(newMessages);
+      if (isDeepDive) setDeepDiveData({ content: reply });
+      
       speak(reply);
-    } catch (e) {
-      setMessages(prev => [...prev, { role: 'assistant', content: "Brain freeze, darling." }]);
-    } finally { setIsProcessing(false); }
+    } catch (e) { setMessages(prev => [...prev, { role: 'assistant', content: "Brain freeze, darling." }]); }
+    finally { setIsProcessing(false); setInputText(''); }
   };
 
-  // --- ORIGINAL WORKING MIC LOGIC ---
+  // --- TOOLS: MIC & PDF ---
   const toggleMic = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
     if (isRecording) { recognitionRef.current.stop(); setIsRecording(false); return; }
-    
     const rec = new SpeechRecognition();
     rec.continuous = true;
-    rec.onresult = (e) => {
-      const transcript = e.results[e.results.length - 1][0].transcript;
-      setInputText(prev => prev + " " + transcript);
-    };
+    rec.onresult = (e) => setInputText(prev => prev + " " + e.results[e.results.length-1][0].transcript);
     recognitionRef.current = rec;
     rec.start();
     setIsRecording(true);
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    scriptMemoryRef.current = text;
+    handleFrankResponse(`[Script Uploaded] CONTENT: ${text.slice(0, 10000)}`);
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-[#faf9f6] text-stone-800 font-sans">
+    <div className="flex flex-col h-screen bg-[#faf9f6] text-stone-800 font-sans overflow-hidden">
       <header className="p-6 bg-white border-b flex justify-between shadow-sm">
-        <h1 className="font-black italic text-2xl">FRANK</h1>
-        <button onClick={() => setMessages([])} className="text-stone-400"><Trash2 size={18}/></button>
+        <h1 className="font-black italic text-2xl">FRANK AI</h1>
+        <div className="flex gap-4 text-[10px] uppercase font-bold text-stone-400">
+          <button onClick={() => setActiveTab('chat')} className={activeTab === 'chat' ? 'text-black' : ''}>Lounge</button>
+          <button onClick={() => setActiveTab('deep-dive')} className={activeTab === 'deep-dive' ? 'text-black' : ''}>Surgery</button>
+        </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-10 space-y-6">
-        {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] p-6 rounded-2xl ${m.role === 'user' ? 'bg-stone-800 text-white' : 'bg-white border shadow-sm'}`}>
-              {m.content}
+      <main className="flex-1 overflow-y-auto p-10 space-y-6 bg-[#fdfcfb]">
+        {activeTab === 'chat' ? (
+          messages.map((m, i) => (
+            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[80%] p-6 rounded-2xl ${m.role === 'user' ? 'bg-stone-800 text-white' : 'bg-white border'}`}>
+                {m.content}
+              </div>
             </div>
-          </div>
-        ))}
-        {isProcessing && <div className="italic text-stone-400">Frank is thinking...</div>}
+          ))
+        ) : (
+          <div className="bg-white p-10 rounded-xl shadow-sm whitespace-pre-wrap">{deepDiveData?.content || "Surgery prepped."}</div>
+        )}
+        {isProcessing && <div className="italic text-stone-400">Frank is scribbling...</div>}
       </main>
 
-      <footer className="p-6 bg-white border-t flex flex-col gap-4">
-        <div className="flex gap-4">
-          <input 
-            value={inputText} 
-            onChange={(e) => setInputText(e.target.value)} 
-            onKeyDown={(e) => e.key === 'Enter' && handleFrankResponse(inputText)}
-            className="flex-1 bg-stone-50 p-4 rounded-xl outline-none border" 
-            placeholder="Convince me, darling..." 
-          />
-          <button onClick={toggleMic} className={`p-4 rounded-full ${isRecording ? 'bg-red-500 text-white' : 'bg-stone-100'}`}><Mic size={20}/></button>
-          <button onClick={() => handleFrankResponse(inputText)} className="bg-black text-white px-8 rounded-xl font-bold">SEND</button>
+      <footer className="p-8 bg-white border-t space-y-4">
+        <div className="flex justify-center gap-4">
+          <button onClick={() => handleFrankResponse(null, true)} className="bg-red-600 text-white px-6 py-2 rounded-full text-[10px] font-bold uppercase"><Stethoscope size={14} className="inline mr-2"/> Surgery</button>
+        </div>
+        <div className="max-w-4xl mx-auto flex gap-4">
+          <input value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleFrankResponse(inputText)} className="flex-1 bg-stone-50 p-4 rounded-xl outline-none" placeholder="Convince me, darling..." />
+          <button onClick={toggleMic} className={`w-12 h-12 rounded-full flex items-center justify-center ${isRecording ? 'bg-red-500 text-white' : 'bg-stone-100'}`}><Mic size={20}/></button>
+          <label className="w-12 h-12 bg-stone-100 rounded-full flex items-center justify-center cursor-pointer"><FileUp size={20}/><input type="file" className="hidden" onChange={handleFileUpload}/></label>
+          <button onClick={() => handleFrankResponse(inputText)} className="bg-black text-white px-8 rounded-xl font-bold uppercase text-[10px]">Send</button>
         </div>
       </footer>
     </div>
