@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Play, Pause, RotateCcw, FileUp, Volume2 } from 'lucide-react';
+import { Send, Play, Pause, RotateCcw, FileUp, Volume2, Mic, MicOff } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
-// --- CONFIGURATION ---
+// --- CONFIGURATION (Uses your Render Environment Variables) ---
 const apiKey = process.env.REACT_APP_GEMINI_API_KEY; 
 const INWORLD_API_KEY = process.env.REACT_APP_INWORLD_KEY; 
 const VOICE_ID = process.env.REACT_APP_VOICE_ID; 
@@ -32,12 +32,13 @@ const App = () => {
   const audioContextRef = useRef(null);
   const sourceNodeRef = useRef(null);
 
+  // AUTH
   useEffect(() => {
     signInAnonymously(auth);
     return auth.onAuthStateChanged(setUser);
   }, []);
 
-  // --- THE PERFECT TTS (RESTORING ORIGINAL LOGIC) ---
+  // --- WORKING TTS SYSTEM (Original Logic) ---
   const speak = async (text) => {
     try {
       const response = await fetch('https://api.inworld.ai/tts/v1/voice', {
@@ -50,12 +51,11 @@ const App = () => {
       });
       const json = await response.json();
       
-      // The original binary conversion that worked
       const binary = window.atob(json.audioContent);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       
-      if (!audioContextRef.current) audioContextRef.current = new AudioContext();
+      if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
       const ctx = audioContextRef.current;
       const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
       const source = ctx.createBufferSource();
@@ -65,37 +65,41 @@ const App = () => {
       setIsSpeaking(true);
       source.onended = () => setIsSpeaking(false);
       source.start(0);
-    } catch (e) { console.error("Jimmy's voice cut out!", e); }
+    } catch (e) { console.error("TTS Error:", e); }
   };
 
-  // --- THE BRAIN (SIMPLE & DRAMATIC) ---
-  const handleSend = async () => {
-    if (!inputText || isProcessing) return;
-    const prompt = inputText;
-    setInputText('');
+  // --- WORKING GEMINI BRAIN (Original Logic) ---
+  const handleFrankResponse = async (textToProcess) => {
+    if (!textToProcess || isProcessing) return;
     setIsProcessing(true);
+    setInputText('');
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-      const res = await fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: `You are Frank, a theatrical movie executive. Use drama and script quotes. Respond to: ${prompt}` }] }]
+          contents: [{ parts: [{ text: `You are Frank, a theatrical, flamboyant Sunset Blvd executive. Respond to: ${textToProcess}` }] }]
         })
       });
-      const data = await res.json();
-      const reply = data.candidates[0].content.parts[0].text;
-
-      setMessages(prev => [...prev, { role: 'user', content: prompt }, { role: 'assistant', content: reply }]);
-      speak(reply);
-    } catch (e) {
-      setMessages(prev => [...prev, { role: 'assistant', content: "Brain freeze, darling. Try again." }]);
-    } finally { setIsProcessing(false); }
+      
+      const data = await response.json();
+      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (responseText) {
+        setMessages(prev => [...prev, { role: 'user', content: textToProcess }, { role: 'assistant', content: responseText }]);
+        speak(responseText);
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: "Momentary brain freeze, darling. Try again." }]);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
-    <div className="flex flex-col h-screen bg-[#faf9f6] text-stone-800 font-sans">
+    <div className="flex flex-col h-screen bg-[#faf9f6] text-stone-800 font-sans overflow-hidden">
       <header className="p-6 bg-white border-b flex justify-between items-center shadow-sm">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-black text-white flex items-center justify-center font-bold italic rounded">F</div>
@@ -103,7 +107,7 @@ const App = () => {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-10 space-y-6">
+      <main className="flex-1 overflow-y-auto p-10 space-y-6 bg-[#fdfcfb]">
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] p-6 rounded-2xl ${m.role === 'user' ? 'bg-stone-900 text-white shadow-lg' : 'bg-white border shadow-sm font-serif'}`}>
@@ -111,7 +115,7 @@ const App = () => {
             </div>
           </div>
         ))}
-        {isProcessing && <div className="italic text-stone-400">Frank is scribbling...</div>}
+        {isProcessing && <div className="italic text-stone-400">Frank is scribbling notes...</div>}
       </main>
 
       <footer className="p-8 bg-white border-t space-y-4 shadow-2xl">
@@ -124,11 +128,11 @@ const App = () => {
           <input 
             value={inputText} 
             onChange={(e) => setInputText(e.target.value)} 
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            onKeyDown={(e) => e.key === 'Enter' && handleFrankResponse(inputText)}
             placeholder="Defend your arc, darling..." 
             className="flex-1 bg-stone-50 border p-4 rounded-2xl outline-none"
           />
-          <button onClick={handleSend} className="bg-black text-white px-8 rounded-2xl font-bold uppercase tracking-widest text-[10px]">Send</button>
+          <button onClick={() => handleFrankResponse(inputText)} className="bg-black text-white px-8 rounded-2xl font-bold uppercase tracking-widest text-[10px]">Send</button>
         </div>
       </footer>
     </div>
