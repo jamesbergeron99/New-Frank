@@ -1,4 +1,22 @@
-"browserslist": {
+{
+  "name": "frank-ai-executive",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "lucide-react": "^0.263.1",
+    "firebase": "^10.0.0",
+    "pdfjs-dist": "3.4.120"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "browserslist": {
     "production": [
       ">0.2%",
       "not dead",
@@ -10,3 +28,4 @@
       "last 1 safari version"
     ]
   }
+}
