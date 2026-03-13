@@ -1,163 +1,225 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Send, Mic, MicOff, Pause, Play, RotateCcw, Loader2, 
-  FileUp, Trash2, Stethoscope, Scissors 
+  Send, Mic, MicOff, Pause, Play, RotateCcw, Loader2, AlertCircle, 
+  FileUp, ClipboardList, Trash2, CheckCircle2, Zap, ZapOff, 
+  BookOpen, Stethoscope, Scissors, Zap as ZapIcon 
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
 // --- CONFIGURATION ---
+// Pulling only the 5 keys you specified
 const apiKey = process.env.REACT_APP_GEMINI_API_KEY; 
-
-// Jimmy Voice Clone - Locked Credentials
-const INWORLD_API_KEY = "SjdZdzZYYWUwY21LdlliOXdrTEhFNDlhUkYxM2FCWHA6bUt1aGszVVJnYU9NN0twNm5odnhyWlJLWURhT2lDUFJFNUFnQk81RXpKajJkcVVSUlhtV0hseGhmZEc3U2IzYg=="; 
-const VOICE_ID = "default-oglabcjnetcklcq7rghmbw__jimmy"; 
+const INWORLD_API_KEY = process.env.REACT_APP_INWORLD_KEY; 
+const VOICE_ID = process.env.REACT_APP_VOICE_ID; 
+const MODEL_ID = "inworld-tts-1.5-max";
 
 const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  apiKey: process.env.REACT_APP_FIREBASE_KEY,
   projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.REACT_APP_FIREBASE_SENDER_ID,
-  appId: process.env.REACT_APP_FIREBASE_APP_ID
+  // These are derived from Project ID so you don't have to put them in .env
+  authDomain: `${process.env.REACT_APP_FIREBASE_PROJECT_ID}.firebaseapp.com`,
+  storageBucket: `${process.env.REACT_APP_FIREBASE_PROJECT_ID}.appspot.com`,
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const appId = 'frank-exec-series-v14';
 
 const App = () => {
+  // --- ALL STATE & REFS FROM YOUR ORIGINAL PROGRAM ---
   const [user, setUser] = useState(null);
-  const [messages, setMessages] = useState([{ role: 'assistant', content: "I'm Frank. Darling, the velvet is on. Let’s see if these pages have enough soul to survive the weekend." }]);
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: "I'm Frank. Let's quit the posturing and see if these pages have a heartbeat. Send me the script when you're ready to get real." }
+  ]);
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isHandsFree, setIsHandsFree] = useState(false); 
   const [activeTab, setActiveTab] = useState('chat');
+  const [errorMessage, setErrorMessage] = useState(null);
   const [scriptData, setScriptData] = useState(null);
   const [deepDiveData, setDeepDiveData] = useState(null);
+  const [seriesBible, setSeriesBible] = useState(""); 
+  const [isDeepDiving, setIsDeepDiving] = useState(false);
+  const [lastScriptContent, setLastScriptContent] = useState("");
 
   const audioContextRef = useRef(null);
   const sourceNodeRef = useRef(null);
-  const recognitionRef = useRef(null);
-  const scriptMemoryRef = useRef("");
+  const scrollRef = useRef(null);
+  const speechQueue = useRef([]);
+  const audioBufferQueue = useRef([]); 
+  const playedQueue = useRef([]); 
+  const isCurrentlyPlaying = useRef(false);
+  const isFetchingNext = useRef(false);
+  const abortControllerRef = useRef(null);
+  const scriptMemoryRef = useRef(""); 
 
+  // --- AUTH & DATA SYNC ---
   useEffect(() => {
-    signInAnonymously(auth);
-    onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (!currentUser) signInAnonymously(auth);
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
   }, []);
 
-  // --- AUDIO ENGINE ---
-  const speak = async (text) => {
-    try {
-      const response = await fetch('https://api.inworld.ai/tts/v1/voice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${INWORLD_API_KEY}` },
-        body: JSON.stringify({ text, voiceId: VOICE_ID, modelId: "inworld-tts-1.5-max" })
-      });
-      const json = await response.json();
-      const binary = window.atob(json.audioContent);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      
-      if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
-      const source = audioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
-      sourceNodeRef.current = source;
-      setIsSpeaking(true);
-      source.onended = () => setIsSpeaking(false);
-      source.start(0);
-    } catch (e) { console.error("Voice Error", e); }
+  useEffect(() => {
+    if (!user) return;
+    const chatDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'series_bible', 'main');
+    const unsubscribe = onSnapshot(chatDoc, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.messages) setMessages(data.messages);
+        if (data.scriptData) setScriptData(data.scriptData);
+        if (data.deepDiveData) setDeepDiveData(data.deepDiveData);
+        if (data.seriesBible) setSeriesBible(data.seriesBible);
+        if (data.lastScriptContent) {
+            setLastScriptContent(data.lastScriptContent);
+            scriptMemoryRef.current = data.lastScriptContent;
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- REBUILT AUDIO ENGINE (TTS) ---
+  const fetchAudioChunk = async (text) => {
+    const authHeader = INWORLD_API_KEY.trim().startsWith('Basic ') ? INWORLD_API_KEY.trim() : `Basic ${INWORLD_API_KEY.trim()}`;
+    const response = await fetch('https://api.inworld.ai/tts/v1/voice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ text, voiceId: VOICE_ID, modelId: MODEL_ID })
+    });
+    const json = await response.json();
+    const base64 = json.audioContent || (json.result && json.audioContent);
+    const binary = window.atob(base64.replace(/^data:audio\/\w+;base64,/, ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
   };
 
-  // --- BRAIN ENGINE ---
-  const handleFrankResponse = async (textToProcess, isDeepDive = false) => {
-    if (!textToProcess && !isDeepDive) return;
-    setIsProcessing(true);
-    if (isDeepDive) setActiveTab('deep-dive');
-    
+  const processAudioQueue = async () => {
+    if (isCurrentlyPlaying.current || isPaused) return;
+    if (audioBufferQueue.current.length === 0) {
+      if (speechQueue.current.length === 0) {
+        setIsSpeaking(false);
+        return;
+      }
+      await fillAudioBuffer();
+      return;
+    }
+    isCurrentlyPlaying.current = true;
+    setIsSpeaking(true);
+    const currentItem = audioBufferQueue.current.shift();
+    if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = audioContextRef.current;
+    const decodedBuffer = await ctx.decodeAudioData(currentItem.buffer.slice(0));
+    const source = ctx.createBufferSource();
+    source.buffer = decodedBuffer;
+    source.connect(ctx.destination);
+    sourceNodeRef.current = source;
+    source.start(0);
+    source.onended = () => {
+      isCurrentlyPlaying.current = false;
+      processAudioQueue(); 
+    };
+  };
+
+  const fillAudioBuffer = async () => {
+    if (isFetchingNext.current || speechQueue.current.length === 0) return;
+    isFetchingNext.current = true;
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-      const prompt = isDeepDive ? `PERFORM SURGERY ON THIS SCRIPT: ${scriptMemoryRef.current}` : textToProcess;
-      
+      const nextText = speechQueue.current.shift();
+      const buffer = await fetchAudioChunk(nextText);
+      audioBufferQueue.current.push({ text: nextText, buffer });
+      processAudioQueue();
+    } catch (e) { console.error("TTS Error", e); } finally { isFetchingNext.current = false; }
+  };
+
+  const queueSpeech = (fullText) => {
+    const cleaned = fullText.replace(/[*_#~`>]/g, '').replace(/\[.*?\]/g, '').replace(/\n\n+/g, ' ').trim();
+    const chunks = cleaned.split(/(?<=[.!?])\s+/).filter(c => c.length > 2);
+    speechQueue.current = [...speechQueue.current, ...chunks];
+    processAudioQueue();
+  };
+
+  // --- FRANK BRAIN (GEMINI) ---
+  const handleFrankResponse = async (textToProcess, isDeepDive = false) => {
+    if (audioContextRef.current) sourceNodeRef.current?.stop();
+    setIsProcessing(true);
+    if (isDeepDive) { setIsDeepDiving(true); setActiveTab('deep-dive'); }
+    
+    const systemPrompt = `You are Frank, an elite Sunset Blvd executive. Speak ONLY in FIRST PERSON. ANTI-REPETITION PROTOCOL: Never start with standard greetings. Be sharp and specific.`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+    try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `You are Frank, a flamboyant Sunset Blvd executive. Respond to: ${prompt}` }] }]
-        })
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: textToProcess }] }], systemInstruction: { parts: [{ text: systemPrompt }] } })
       });
-      
       const data = await response.json();
-      const reply = data.candidates[0].content.parts[0].text;
+      const responseText = data.candidates[0].content.parts[0].text;
       
-      const newMessages = [...messages, { role: 'user', content: isDeepDive ? "[Deep Dive]" : textToProcess }, { role: 'assistant', content: reply }];
+      const newMessages = [...messages, { role: 'user', content: textToProcess }, { role: 'assistant', content: responseText }];
       setMessages(newMessages);
-      if (isDeepDive) setDeepDiveData({ content: reply });
-      
-      speak(reply);
-    } catch (e) { setMessages(prev => [...prev, { role: 'assistant', content: "Brain freeze, darling." }]); }
-    finally { setIsProcessing(false); setInputText(''); }
+      queueSpeech(responseText);
+      // Simplified Cloud Save
+      const chatDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'series_bible', 'main');
+      await setDoc(chatDoc, { messages: newMessages, lastScriptContent: scriptMemoryRef.current }, { merge: true });
+    } catch (e) {
+        setErrorMessage("Frank's hit a wall. Checking credentials...");
+    } finally {
+      setIsProcessing(false);
+      setIsDeepDiving(false);
+    }
   };
 
-  // --- TOOLS: MIC & PDF ---
-  const toggleMic = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-    if (isRecording) { recognitionRef.current.stop(); setIsRecording(false); return; }
-    const rec = new SpeechRecognition();
-    rec.continuous = true;
-    rec.onresult = (e) => setInputText(prev => prev + " " + e.results[e.results.length-1][0].transcript);
-    recognitionRef.current = rec;
-    rec.start();
-    setIsRecording(true);
-  };
-
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    scriptMemoryRef.current = text;
-    handleFrankResponse(`[Script Uploaded] CONTENT: ${text.slice(0, 10000)}`);
-  };
-
+  // --- UI RENDER (The Tailwind Layout) ---
   return (
-    <div className="flex flex-col h-screen bg-[#faf9f6] text-stone-800 font-sans overflow-hidden">
-      <header className="p-6 bg-white border-b flex justify-between shadow-sm">
-        <h1 className="font-black italic text-2xl">FRANK AI</h1>
-        <div className="flex gap-4 text-[10px] uppercase font-bold text-stone-400">
-          <button onClick={() => setActiveTab('chat')} className={activeTab === 'chat' ? 'text-black' : ''}>Lounge</button>
-          <button onClick={() => setActiveTab('deep-dive')} className={activeTab === 'deep-dive' ? 'text-black' : ''}>Surgery</button>
+    <div className="flex flex-col h-screen bg-[#faf9f6] text-[#2c2c2c] font-sans overflow-hidden">
+      <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-stone-200 shadow-sm">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-black rounded flex items-center justify-center text-white font-bold italic">F</div>
+          <div>
+            <h1 className="text-xl font-black tracking-tighter uppercase text-stone-800 leading-none">Frank</h1>
+            <p className="text-[8px] uppercase tracking-[0.3em] font-bold mt-1 text-stone-400">Executive Series Office</p>
+          </div>
+        </div>
+        <div className="flex gap-6 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+          <button onClick={() => setActiveTab('chat')} className={activeTab === 'chat' ? 'text-black border-b-2 border-black' : ''}>LOUNGE</button>
+          <button onClick={() => setActiveTab('deep-dive')} className={activeTab === 'deep-dive' ? 'text-black border-b-2 border-black' : ''}>SURGERY</button>
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-10 space-y-6 bg-[#fdfcfb]">
-        {activeTab === 'chat' ? (
-          messages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] p-6 rounded-2xl ${m.role === 'user' ? 'bg-stone-800 text-white' : 'bg-white border'}`}>
-                {m.content}
-              </div>
+      <main className="flex-1 overflow-y-auto p-10 space-y-10 relative">
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[75%] p-6 leading-relaxed ${m.role === 'user' ? 'bg-stone-800 text-white rounded-2xl' : 'bg-white border border-stone-100 shadow-sm'}`}>
+              {m.content}
             </div>
-          ))
-        ) : (
-          <div className="bg-white p-10 rounded-xl shadow-sm whitespace-pre-wrap">{deepDiveData?.content || "Surgery prepped."}</div>
-        )}
-        {isProcessing && <div className="italic text-stone-400">Frank is scribbling...</div>}
+          </div>
+        ))}
+        {isProcessing && <div className="text-stone-400 animate-pulse font-bold">Frank is thinking...</div>}
+        <div ref={scrollRef} />
       </main>
 
-      <footer className="p-8 bg-white border-t space-y-4">
-        <div className="flex justify-center gap-4">
-          <button onClick={() => handleFrankResponse(null, true)} className="bg-red-600 text-white px-6 py-2 rounded-full text-[10px] font-bold uppercase"><Stethoscope size={14} className="inline mr-2"/> Surgery</button>
-        </div>
-        <div className="max-w-4xl mx-auto flex gap-4">
-          <input value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleFrankResponse(inputText)} className="flex-1 bg-stone-50 p-4 rounded-xl outline-none" placeholder="Convince me, darling..." />
-          <button onClick={toggleMic} className={`w-12 h-12 rounded-full flex items-center justify-center ${isRecording ? 'bg-red-500 text-white' : 'bg-stone-100'}`}><Mic size={20}/></button>
-          <label className="w-12 h-12 bg-stone-100 rounded-full flex items-center justify-center cursor-pointer"><FileUp size={20}/><input type="file" className="hidden" onChange={handleFileUpload}/></label>
-          <button onClick={() => handleFrankResponse(inputText)} className="bg-black text-white px-8 rounded-xl font-bold uppercase text-[10px]">Send</button>
+      <footer className="p-6 bg-white border-t border-stone-100">
+        <div className="flex items-center gap-4 max-w-5xl mx-auto w-full">
+            <input 
+                value={inputText} 
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleFrankResponse(inputText)}
+                className="flex-1 px-6 py-4 bg-stone-50 border-none rounded-xl text-sm" 
+                placeholder="Defend your arc..." 
+            />
+            <button onClick={() => handleFrankResponse(inputText)} className="bg-black text-white p-4 rounded-xl"><Send size={18} /></button>
         </div>
       </footer>
     </div>
